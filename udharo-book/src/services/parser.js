@@ -19,6 +19,9 @@ const NON_NAME_WORDS = new Set([
   'मैले', 'उसले', 'मैले', 'भर्खरै', 'खाजा', 'खर्च', 'रिचार्ज', 'कार्ड',
   'पेट्रोल', 'गाडी', 'भाडा', 'सामान', 'रूपैयाँ', 'रुपैयाँ', 'cash',
   'online', 'अनलाइन', 'ट्रान्सफर', 'खर्च', 'भयो', 'गर्‍यो', 'किनेँ', 'किनेको'
+  , 'udharo', 'udhaar', 'udhar', 'credit', 'borrow', 'payment', 'paid',
+  'tiryo', 'tireko', 'diyo', 'liyo', 'लियो', 'लिएको', 'दियो', 'तिरेको',
+  'उधारो', 'उधार', 'सापटी', 'भुक्तानी', 'तिर्यो'
 ])
 
 export const normalize = (s = '') => {
@@ -137,15 +140,16 @@ export function parse(raw = '', customers = []) {
 
   // 4. Determine intent
   const NEGATIVE_REGEX = /(?:दिएन|दिइन|दिन्न|तिरेन|तिर्दिन|बुझाएन|बुझाइन|पाएन|आएन|didn't|did not|not paid|unpaid)/i
-  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|dieko|paisa diyo|payment|paid|received|transfer|cash|सहयोग|तिरेँ|तिर्यो|तिरे|तिरेको|तिर्नुभयो|भुक्तानी|चुक्ता|बुझायो|बुझाएँ|बुझायो|दियो|दिएँ|जम्मा|उठायो|पाए|पाएँ|प्राप्त|फिर्ता दिइन्|बुझाइदियो|ट्रान्सफर|हस्तान्तरण)/i
+  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|diye|dieko|paisa diyo|payment|paid|received|transfer|cash|सहयोग|तिरेँ|तिर्यो|तिरे|तिरेको|तिर्नुभयो|भुक्तानी|चुक्ता|बुझायो|बुझाएँ|बुझायो|दियो|दिएँ|जम्मा|उठायो|पाए|पाएँ|प्राप्त|फिर्ता दिइन्|बुझाइदियो|ट्रान्सफर|हस्तान्तरण)/i
   const CREDIT_REGEX = /(?:udharo|udhaar|udhar|lagyo|lagyeko|liyera|liyo|lieko|saman|credit|borrow|later|पछि दिन्छु|उधारो|उधार|सापटी|लग्यो|लगेको|लियो|लिएको|लिनुभयो|सामान|दिएको|दिन्छु)/i
   const EXPENSE_REGEX = /(?:expense|purchase|खर्च|किनेँ|किनेको|किन्यो|भाडा|पेट्रोल|रिचार्ज|खाजा)/i
   const BAL_REGEX = /(?:baki|khata|kati cha|dekha|balance|status|बाँकी|बाकि|बाकी|खाता|कति छ|कति बाँकी|हिसाब|हेर्नु|हेर)/i
 
   const isPay = PAY_REGEX.test(norm)
+  const hasExplicitType = isPay || CREDIT_REGEX.test(norm)
   const isNegative = NEGATIVE_REGEX.test(norm)
   const isBal = BAL_REGEX.test(norm) && !isPay && !CREDIT_REGEX.test(norm)
-  const isCredit = CREDIT_REGEX.test(norm) || (amount && !isPay && !isBal && !EXPENSE_REGEX.test(norm))
+  const isCredit = CREDIT_REGEX.test(norm)
   const isExpense = EXPENSE_REGEX.test(norm)
 
   let kind = 'unknown'
@@ -159,20 +163,34 @@ export function parse(raw = '', customers = []) {
     kind = 'credit'
   } else if (isExpense && amount) {
     kind = 'payment'
-  } else if (isPay && !amount) {
-    kind = 'payment'
+  } else if (hasExplicitType || amount) {
+    kind = 'incomplete'
   }
 
   if (kind === 'unknown') {
     return { kind: 'unknown', raw }
   }
 
+  if (kind === 'incomplete') {
+    return {
+      kind,
+      raw,
+      amount,
+      name: extractedName || null,
+      missing: [
+        !extractedName ? 'person' : null,
+        !amount ? 'amount' : null,
+        !hasExplicitType ? 'type' : null
+      ].filter(Boolean)[0]
+    }
+  }
+
   if (!extractedName) {
-    return { kind: 'noname', raw }
+    return { kind: 'incomplete', raw, amount, missing: 'person' }
   }
 
   if ((kind === 'payment' || kind === 'credit') && !amount) {
-    return { kind: 'noamount', name: extractedName }
+    return { kind: 'incomplete', raw, name: extractedName, missing: 'amount' }
   }
 
   const matches = matchCustomers(extractedName, customers)

@@ -93,6 +93,7 @@ export default function App() {
   const [listening, setListening] = useState(false)
   const [heard, setHeard] = useState('')
   const [lastVoiceCommand, setLastVoiceCommand] = useState('')
+  const [pendingVoiceCommand, setPendingVoiceCommand] = useState(null)
   const [micLang, setMicLang] = useState('ne-NP') // independent from UI lang
   const speechRec = useRef(null)
   const mediaRecRef = useRef(null)
@@ -392,11 +393,37 @@ export default function App() {
     })
   }
 
+  const getFollowUpQuestion = (missing) => {
+    if (lang === 'ne') {
+      if (missing === 'person') return 'कसले यो रकम लियो वा दियो?'
+      if (missing === 'amount') return 'कति रकम?'
+      return 'यो उधारो हो कि भुक्तानी?'
+    }
+    if (missing === 'person') return 'Who took or paid this amount?'
+    if (missing === 'amount') return 'How much?'
+    return 'Was this credit given or payment received?'
+  }
+
+  const askForMissingVoiceField = (cmd) => {
+    setPendingVoiceCommand(cmd)
+    setVoicePanel({
+      kind: 'followup',
+      msg: getFollowUpQuestion(cmd.missing)
+    })
+  }
+
   const runVoiceCommand = (text) => {
     setHeard(text)
     setLastVoiceCommand(text)
-    const cmd = parse(text, customers)
+    const commandText = pendingVoiceCommand
+      ? `${pendingVoiceCommand.raw} ${text}`.trim()
+      : text
+    const cmd = parse(commandText, customers)
     const hint = lang === 'ne' ? 'उदा: "रामले ५०० रुपैयाँ उधारो लियो"' : 'Try: "Ram le 500 udharo liyo"'
+
+    if (pendingVoiceCommand) {
+      setPendingVoiceCommand(null)
+    }
 
     if (cmd.kind === 'negative') {
       return setVoicePanel({
@@ -409,19 +436,8 @@ export default function App() {
     if (cmd.kind === 'unknown') {
       return setVoicePanel({ kind: 'error', msg: t.speechFail, hint })
     }
-    if (cmd.kind === 'noname') {
-      return setVoicePanel({
-        kind: 'error',
-        msg: lang === 'ne' ? 'ग्राहकको नाम बुझ्न सकिएन।' : "Couldn't understand the customer name.",
-        hint
-      })
-    }
-    if (cmd.kind === 'noamount') {
-      return setVoicePanel({
-        kind: 'error',
-        msg: lang === 'ne' ? 'रकम (Amount) बुझ्न सकिएन।' : "Couldn't understand the amount.",
-        hint
-      })
+    if (cmd.kind === 'incomplete') {
+      return askForMissingVoiceField(cmd)
     }
     if (cmd.kind === 'top') {
       return owingCustomers[0]
@@ -574,8 +590,13 @@ export default function App() {
       rec.onerror = (e) => {
         recognitionError = true
         setListening(false)
+        if (e.error === 'service-not-allowed' && gcpApiKey) {
+          setVoicePanel({ kind: 'error', msg: lang === 'ne' ? 'ब्राउजर आवाज सेवा उपलब्ध भएन। Cloud Speech मा प्रयास गर्दैछ...' : 'Browser speech service is unavailable. Trying Cloud Speech...' })
+          setTimeout(() => startCloudSpeechListening(), 0)
+          return
+        }
         const message = e.error === 'not-allowed' || e.error === 'service-not-allowed'
-          ? t.micDenied
+          ? (e.error === 'service-not-allowed' ? t.speechServiceBlocked : t.micDenied)
           : e.error === 'audio-capture'
             ? (lang === 'ne' ? 'माइक भेटिएन। माइक जोडेर फेरि प्रयास गर्नुहोस्।' : 'No microphone was found. Connect a microphone and try again.')
             : e.error === 'no-speech'
@@ -998,12 +1019,12 @@ export default function App() {
               <Receipt size={22} />
             </div>
             <div>
-              <div className="flex items-center gap-1.5 leading-none">
-                <span className="text-xl sm:text-2xl font-bold text-emerald-700 font-heading group-hover:text-emerald-800 transition-colors">
-                  {t.appTitle || 'Udharo'}
+              <div className="flex items-center gap-1 leading-none brand-devanagari">
+                <span className="text-2xl sm:text-3xl font-extrabold text-emerald-700 group-hover:text-emerald-800 transition-colors">
+                  उधारो
                 </span>
-                <span className="text-xl sm:text-2xl font-bold text-stone-900 font-heading">
-                  {t.appSubtitle || 'Book'}
+                <span className="text-2xl sm:text-3xl font-extrabold text-stone-900">
+                  बुक
                 </span>
               </div>
               <p className="hidden sm:block text-[11px] text-stone-500 mt-1 leading-none">{t.tagline}</p>
@@ -1037,7 +1058,7 @@ export default function App() {
           </nav>
 
           {/* Actions & Language Switcher */}
-          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3 lg:justify-self-end lg:min-w-[280px] lg:justify-end">
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3 lg:w-full lg:justify-self-end lg:min-w-[280px] lg:justify-end">
             <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-medium text-stone-400">
               <Check size={12} className="text-emerald-500" />
               {saveStatus === 'saved' ? (lang === 'ne' ? 'स्थानीय रूपमा सुरक्षित' : 'Saved locally') : 'Saving...'}
@@ -1060,24 +1081,25 @@ export default function App() {
             </Btn>
 
             {/* Interface language switcher; microphone language remains independent. */}
-            <button
-              onClick={toggleLanguage}
-              className="btn-interactive flex h-10 items-center gap-1 rounded-full border border-stone-200 bg-white p-1 hover:border-emerald-300 text-xs sm:text-sm font-semibold text-stone-700 shadow-2xs"
-              title="Toggle English / नेपाली"
-              aria-label={`Switch interface language to ${lang === 'ne' ? 'English' : 'Nepali'}`}
-            >
-              <span className={`flex h-8 items-center gap-1 rounded-full px-2.5 sm:px-3 ${
-                lang === 'en' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
-              }`}>
-                <Globe size={14} />
-                <span className="w-[4.5rem] text-center">English</span>
-              </span>
-              <span className={`flex h-8 items-center rounded-full px-2.5 sm:px-3 ${
-                lang === 'ne' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
-              }`}>
-                <span className="w-[3.5rem] text-center">नेपाली</span>
-              </span>
-            </button>
+            <div className="ml-auto shrink-0">
+              <button
+                onClick={toggleLanguage}
+                className="btn-interactive flex h-9 items-center gap-0.5 rounded-full border border-stone-200 bg-white p-1 hover:border-emerald-300 text-xs font-semibold text-stone-700 shadow-2xs"
+                title="Toggle English / नेपाली"
+                aria-label={`Switch interface language to ${lang === 'ne' ? 'English' : 'Nepali'}`}
+              >
+                <span className={`flex h-7 items-center rounded-full px-2 ${
+                  lang === 'en' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
+                }`}>
+                  EN
+                </span>
+                <span className={`flex h-7 items-center rounded-full px-2 ${
+                  lang === 'ne' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
+                }`}>
+                  NP
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -1997,11 +2019,15 @@ export default function App() {
               done: t.recordedSuccess,
               answer: voicePanel.title,
               error: lang === 'ne' ? 'ध्यान दिनुहोस्' : 'Notice',
+              followup: lang === 'ne' ? 'थप जानकारी चाहियो' : 'One more detail',
               pick: lang === 'ne' ? 'कृपया ग्राहक छान्नुहोस्' : 'Did you mean?',
               notfound: lang === 'ne' ? 'ग्राहक भेटिएन' : 'Customer Not Found'
             }[voicePanel.kind] || 'Voice'
           }
-          onClose={() => setVoicePanel(null)}
+          onClose={() => {
+            setVoicePanel(null)
+            setPendingVoiceCommand(null)
+          }}
           maxWidth="max-w-md"
         >
           {voicePanel.kind === 'answer' && (
@@ -2021,6 +2047,15 @@ export default function App() {
                   {voicePanel.hint}
                 </div>
               )}
+            </div>
+          )}
+
+          {voicePanel.kind === 'followup' && (
+            <div className="py-3 text-center">
+              <p className="text-stone-800 font-semibold">{voicePanel.msg}</p>
+              <p className="mt-3 text-xs text-stone-500">
+                {lang === 'ne' ? 'माइक थिचेर जवाफ दिनुहोस्।' : 'Tap the microphone and answer.'}
+              </p>
             </div>
           )}
 
