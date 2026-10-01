@@ -1,7 +1,12 @@
 // Robust bilingual Nepali (Devanagari & Romanized) voice & text parser for Udharo Book
 
 const DEV_DIGITS = { '०':'0', '१':'1', '२':'2', '३':'3', '४':'4', '५':'5', '६':'6', '७':'7', '८':'8', '९':'9' }
-
+const NUMBER_WORDS = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  शून्य: 0, एक: 1, दुई: 2, तीन: 3, तिन: 3, चार: 4,
+  पाँच: 5, पाच: 5, सात: 7, आठ: 8, नौ: 9, दश: 10
+}
 export function devanagariToAsciiDigits(str = '') {
   return str.replace(/[०-९]/g, d => DEV_DIGITS[d] || d)
 }
@@ -9,6 +14,11 @@ export function devanagariToAsciiDigits(str = '') {
 const HON = new Set([
   'dai', 'didi', 'ji', 'bhai', 'sir', 'saheb', 'bhauju', 'kaka', 'kaki',
   'दाई', 'दिदी', 'जी', 'भाई', 'काका', 'काकी', 'सर', 'भाउजु', 'दाइ'
+])
+const NON_NAME_WORDS = new Set([
+  'मैले', 'उसले', 'मैले', 'भर्खरै', 'खाजा', 'खर्च', 'रिचार्ज', 'कार्ड',
+  'पेट्रोल', 'गाडी', 'भाडा', 'सामान', 'रूपैयाँ', 'रुपैयाँ', 'cash',
+  'online', 'अनलाइन', 'ट्रान्सफर', 'खर्च', 'भयो', 'गर्‍यो', 'किनेँ', 'किनेको'
 ])
 
 export const normalize = (s = '') => {
@@ -20,7 +30,7 @@ export const normalize = (s = '') => {
 
 export function extractAmount(text = '') {
   const clean = devanagariToAsciiDigits(text)
-  
+
   // Look for multiplier words like "5 hajar", "5 हजार", "5 saya", "5 सय"
   const multiplierMatch = clean.match(/(\d+)\s*(?:हजार|hajar|k\b)/i)
   if (multiplierMatch) {
@@ -35,6 +45,15 @@ export function extractAmount(text = '') {
   if (numMatch) {
     return parseInt(numMatch[1].replace(/,/g, ''), 10)
   }
+
+  const words = normalize(clean).split(' ')
+  const number = words.map(word => NUMBER_WORDS[word]).find(value => value !== undefined)
+  if (number !== undefined) {
+    if (words.some(word => word === 'हजार' || word === 'thousand')) return number * 1000
+    if (words.some(word => word === 'सय' || word === 'hundred')) return number * 100
+    return number
+  }
+
   return null
 }
 
@@ -76,32 +95,44 @@ export function parse(raw = '', customers = []) {
   // Handles attached vibhakti: "रामले", "सितालाई", "हरिको" OR separated: "राम ले", "ram le", "ram ko"
   let extractedName = ''
   
+  const fromSubjectMatch = norm.match(/^(?:मैले\s+)?(.+?)(?:बाट|bata)(?:\s+|$)/i)
   const vibhaktiMatch = norm.match(/^(.+?)(?:\s+(?:le|ko|lai|bata|ले|को|लाई|बाट)|(?:ले|को|लाई|बाट))(?:\s+|$)/i)
-  if (vibhaktiMatch) {
+  if (fromSubjectMatch) {
+    extractedName = fromSubjectMatch[1].trim()
+  } else if (vibhaktiMatch) {
     extractedName = vibhaktiMatch[1].trim()
   } else {
-    // English style: "Add 500 credit for Ram", "Ram 500 udharo"
-    const engMatch = norm.match(/(?:for|from|to)\s+([a-zA-Z\u0900-\u097F]+)/i)
-    if (engMatch) {
-      extractedName = engMatch[1].trim()
+    const fromMatch = norm.match(/(?:बाट|bata)\s+([a-zA-Z\u0900-\u097F]+)/i)
+    if (fromMatch) {
+      extractedName = fromMatch[1].trim()
     } else {
-      // Fallback: take the first word before any digits
-      const beforeDigit = norm.split(/\d/)[0].trim()
-      const words = beforeDigit.split(/\s+/).filter(w => !HON.has(w))
-      if (words.length) {
-        extractedName = words[0]
+    // English style: "Add 500 credit for Ram", "Ram 500 udharo"
+      const engMatch = norm.match(/(?:for|from|to|of)\s+([a-zA-Z\u0900-\u097F]+)/i)
+      if (engMatch) {
+        extractedName = engMatch[1].trim()
+      } else {
+        // Fallback: choose a meaningful word before or after the amount.
+        const words = norm.split(/\s+/).filter(word =>
+          !HON.has(word) &&
+          !NON_NAME_WORDS.has(word) &&
+          !/^\d+$/.test(word) &&
+          !/^(?:ले|को|लाई|बाट|र|को)$/.test(word)
+        )
+        if (words.length) extractedName = words[0]
       }
     }
   }
 
   // 4. Determine intent
-  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|dieko|paisa diyo|payment|paid|received|तिर्यो|तिरे|तिरेको|बुझायो|दियो|जम्मा|बुझाइदियो)/i
-  const CREDIT_REGEX = /(?:udharo|udhaar|udhar|lagyo|lagyeko|liyera|liyo|lieko|saman|credit|borrow|उधारो|उधार|लग्यो|लगेको|लियो|लिएको|सामान)/i
-  const BAL_REGEX = /(?:baki|khata|kati cha|dekha|balance|status|बाँकी|बाकि|खाता|कति छ|हिसाब|हेर)/i
+  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|dieko|paisa diyo|payment|paid|received|transfer|cash|तिरेँ|तिर्यो|तिरे|तिरेको|तिर्नुभयो|भुक्तानी|चुक्ता|बुझायो|बुझाएँ|बुझायो|दियो|दिएँ|जम्मा|उठायो|पाए|पाएँ|प्राप्त|फिर्ता दिइन्|बुझाइदियो|ट्रान्सफर|हस्तान्तरण)/i
+  const CREDIT_REGEX = /(?:udharo|udhaar|udhar|lagyo|lagyeko|liyera|liyo|lieko|saman|credit|borrow|later|पछि दिन्छु|उधारो|उधार|सापटी|लग्यो|लगेको|लियो|लिएको|लिनुभयो|सामान|दिएको|दिन्छु)/i
+  const EXPENSE_REGEX = /(?:expense|purchase|खर्च|किनेँ|किनेको|किन्यो|भाडा|पेट्रोल|रिचार्ज|खाजा)/i
+  const BAL_REGEX = /(?:baki|khata|kati cha|dekha|balance|status|बाँकी|बाकि|बाकी|खाता|कति छ|कति बाँकी|हिसाब|हेर्नु|हेर)/i
 
   const isPay = PAY_REGEX.test(norm)
-  const isBal = BAL_REGEX.test(norm) && !amount
-  const isCredit = CREDIT_REGEX.test(norm) || (amount && !isPay && !isBal)
+  const isBal = BAL_REGEX.test(norm) && !isPay && !CREDIT_REGEX.test(norm)
+  const isCredit = CREDIT_REGEX.test(norm) || (amount && !isPay && !isBal && !EXPENSE_REGEX.test(norm))
+  const isExpense = EXPENSE_REGEX.test(norm)
 
   let kind = 'unknown'
   if (isBal) {
@@ -110,6 +141,8 @@ export function parse(raw = '', customers = []) {
     kind = 'payment'
   } else if (isCredit && amount) {
     kind = 'credit'
+  } else if (isExpense && amount) {
+    kind = 'payment'
   } else if (isPay && !amount) {
     kind = 'payment'
   }

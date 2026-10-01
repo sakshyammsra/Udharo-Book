@@ -9,10 +9,10 @@ const dayAgo = (n, h = 11, m = 0) => {
 
 export const seedData = () => ({
   customers: [
-    { id: 'c1', name: 'राम थापा (Ram Thapa)', phone: '9841234567', nickname: 'राम दाई / Ram Dai', address: 'न्यूरोड (New Road)', createdAt: dayAgo(30) },
-    { id: 'c2', name: 'सीता गुरुङ (Sita Gurung)', phone: '9801234568', nickname: 'सीता दिदी / Sita Didi', address: 'बगैंचा चोक (Bagicha)', createdAt: dayAgo(25) },
-    { id: 'c3', name: 'हरि शर्मा (Hari Sharma)', phone: '9812345679', nickname: 'शर्मा जी / Sharma Ji', address: 'कालिमाटी (Kalimati)', createdAt: dayAgo(20) },
-    { id: 'c4', name: 'कृष्ण अधिकारी (Krishna Adhikari)', phone: '9860123450', nickname: 'कृष्ण काका / Krishna Kaka', address: 'बानेश्वर (Baneshwor)', createdAt: dayAgo(15) },
+    { id: 'c1', name: 'इशानी शेर्पा (Ishani Sherpa)', phone: '9841234567', nickname: 'इशु / Ishu', address: 'न्यूरोड (New Road)', createdAt: dayAgo(30) },
+    { id: 'c2', name: 'फुर्बा तामाङ (Phurba Tamang)', phone: '9801234568', nickname: 'फुर्बा भाइ / Phurba Bhai', address: 'बगैंचा चोक (Bagicha)', createdAt: dayAgo(25) },
+    { id: 'c3', name: 'निशा राई (Nisha Rai)', phone: '9812345679', nickname: 'निशु / Nishu', address: 'कालिमाटी (Kalimati)', createdAt: dayAgo(20) },
+    { id: 'c4', name: 'अमृत महर्जन (Amrit Maharjan)', phone: '9860123450', nickname: 'अमृत दाइ / Amrit Dai', address: 'बानेश्वर (Baneshwor)', createdAt: dayAgo(15) },
   ],
   transactions: [
     { id: 't1', customerId: 'c1', type: 'credit', amount: 1500, description: 'चामल १ बोरा (Rice 1 bag)', timestamp: dayAgo(3, 10, 15) },

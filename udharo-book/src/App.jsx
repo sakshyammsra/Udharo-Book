@@ -69,6 +69,7 @@ const Input = ({ className = '', ...props }) => (
 
 export default function App() {
   const [data, setData] = useState(getData)
+  const dataRef = useRef(data)
   const [lang, setLang] = useState(getStoredLang)
   const [tab, setTab] = useState('home')
   const [customerSearch, setCustomerSearch] = useState('')
@@ -84,10 +85,14 @@ export default function App() {
   const [reminderModal, setReminderModal] = useState(null) // null | customer object
   const [voicePanel, setVoicePanel] = useState(null)
   const [toastMsg, setToastMsg] = useState('')
+  const [saveStatus, setSaveStatus] = useState('saved')
+  const [undoAction, setUndoAction] = useState(null)
+  const undoTimerRef = useRef(null)
 
   // Speech Recognition
   const [listening, setListening] = useState(false)
   const [heard, setHeard] = useState('')
+  const [lastVoiceCommand, setLastVoiceCommand] = useState('')
   const [micLang, setMicLang] = useState('ne-NP') // independent from UI lang
   const speechRec = useRef(null)
   const mediaRecRef = useRef(null)
@@ -107,20 +112,40 @@ export default function App() {
 
   // Persist store changes
   useEffect(() => {
+    dataRef.current = data
     saveData(data)
+    setSaveStatus('saved')
   }, [data])
 
-  // Persist language changes
+  // Flush the latest data before the page is hidden or closed.
+  useEffect(() => {
+    const persistBeforeExit = () => saveData(dataRef.current)
+    window.addEventListener('pagehide', persistBeforeExit)
+    window.addEventListener('beforeunload', persistBeforeExit)
+
+    return () => {
+      window.removeEventListener('pagehide', persistBeforeExit)
+      window.removeEventListener('beforeunload', persistBeforeExit)
+    }
+  }, [])
+
+  const showToast = (msg) => {
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(''), 2800)
+  }
+
+  const offerUndo = (label, restore) => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    setUndoAction({ label, restore })
+    undoTimerRef.current = setTimeout(() => setUndoAction(null), 6000)
+  }
+
+  // Interface language changes independently from the microphone language.
   const toggleLanguage = () => {
     const next = lang === 'ne' ? 'en' : 'ne'
     setLang(next)
     setStoredLang(next)
     showToast(next === 'ne' ? '🇳🇵 भाषा: नेपाली' : '🇬🇧 Language: English')
-  }
-
-  const showToast = (msg) => {
-    setToastMsg(msg)
-    setTimeout(() => setToastMsg(''), 2800)
   }
 
   // Khata Balance calculations
@@ -139,6 +164,27 @@ export default function App() {
     transactions
       .filter((tx) => tx.type === type && isToday(tx.timestamp))
       .reduce((sum, tx) => sum + tx.amount, 0)
+
+  const weeklyInsights = useMemo(() => {
+    const weekStart = new Date()
+    weekStart.setHours(0, 0, 0, 0)
+    weekStart.setDate(weekStart.getDate() - 6)
+
+    const weeklyTransactions = transactions.filter((tx) => new Date(tx.timestamp) >= weekStart)
+    const credit = weeklyTransactions
+      .filter((tx) => tx.type === 'credit')
+      .reduce((sum, tx) => sum + tx.amount, 0)
+    const collected = weeklyTransactions
+      .filter((tx) => tx.type === 'payment')
+      .reduce((sum, tx) => sum + tx.amount, 0)
+    const activity = credit + collected
+
+    return {
+      credit,
+      collected,
+      collectionRate: activity ? Math.round((collected / activity) * 100) : 0
+    }
+  }, [transactions])
 
   // Transactions sorted by timestamp descending
   const recentTransactions = useMemo(() => {
@@ -199,12 +245,19 @@ export default function App() {
 
   // 2. Transaction Delete
   const executeDeleteTransaction = (txId) => {
+    const deleted = data.transactions.find((tx) => tx.id === txId)
     setData((d) => ({
       ...d,
       transactions: d.transactions.filter((tx) => tx.id !== txId)
     }))
     setDeleteConfirm(null)
     showToast(lang === 'ne' ? 'कारोबार हटाइयो' : 'Transaction deleted')
+    if (deleted) {
+      offerUndo(
+        lang === 'ne' ? 'कारोबार हटाइयो' : 'Transaction deleted',
+        () => setData((d) => ({ ...d, transactions: [deleted, ...d.transactions] }))
+      )
+    }
   }
 
   // 3. Customer Add / Edit
@@ -251,6 +304,8 @@ export default function App() {
 
   // 4. Customer Delete
   const executeDeleteCustomer = (custId) => {
+    const deletedCustomer = data.customers.find((c) => c.id === custId)
+    const deletedTransactions = data.transactions.filter((tx) => tx.customerId === custId)
     setData((d) => ({
       customers: d.customers.filter((c) => c.id !== custId),
       transactions: d.transactions.filter((tx) => tx.customerId !== custId)
@@ -258,6 +313,15 @@ export default function App() {
     if (profileCustomerId === custId) setProfileCustomerId(null)
     setDeleteConfirm(null)
     showToast(lang === 'ne' ? 'ग्राहक र सम्पूर्ण कारोबार हटाइयो' : 'Customer and transactions deleted')
+    if (deletedCustomer) {
+      offerUndo(
+        lang === 'ne' ? 'ग्राहक हटाइयो' : 'Customer deleted',
+        () => setData((d) => ({
+          customers: [...d.customers, deletedCustomer],
+          transactions: [...deletedTransactions, ...d.transactions]
+        }))
+      )
+    }
   }
 
   // --- VOICE WORKFLOW ---
@@ -291,6 +355,7 @@ export default function App() {
 
   const runVoiceCommand = (text) => {
     setHeard(text)
+    setLastVoiceCommand(text)
     const cmd = parse(text, customers)
     const hint = lang === 'ne' ? 'उदा: "रामले ५०० रुपैयाँ उधारो लियो"' : 'Try: "Ram le 500 udharo liyo"'
 
@@ -441,35 +506,59 @@ export default function App() {
       // ne-NP natively transcribes Nepali Devanagari in Chrome Android and desktop
       rec.lang = micLang
       rec.interimResults = true
+      rec.maxAlternatives = 3
       speechRec.current = rec
       setHeard('')
       setVoicePanel(null)
       setListening(true)
 
       let finalTranscript = ''
+      let recognitionError = false
       rec.onresult = (e) => {
-        const text = Array.from(e.results).map((x) => x[0].transcript).join(' ')
-        finalTranscript = text
+        const text = Array.from(e.results).map((x) => x[0].transcript).join(' ').trim()
+        const completed = Array.from(e.results)
+          .filter((result) => result.isFinal)
+          .map((result) => result[0].transcript)
+          .join(' ')
+          .trim()
+        finalTranscript = completed || text
         setHeard(text)
       }
       rec.onerror = (e) => {
+        recognitionError = true
         setListening(false)
-        // If mic not-allowed but we have a GCP key, suggest the cloud fallback
-        if (e.error === 'not-allowed') {
-          return setVoicePanel({ kind: 'error', msg: t.micDenied })
-        }
-        setVoicePanel({ kind: 'error', msg: t.speechFail })
+        const message = e.error === 'not-allowed' || e.error === 'service-not-allowed'
+          ? t.micDenied
+          : e.error === 'audio-capture'
+            ? (lang === 'ne' ? 'माइक भेटिएन। माइक जोडेर फेरि प्रयास गर्नुहोस्।' : 'No microphone was found. Connect a microphone and try again.')
+            : e.error === 'no-speech'
+              ? (lang === 'ne' ? 'आवाज सुनिएन। माइक नजिक स्पष्ट रूपमा बोल्नुहोस्।' : 'No speech detected. Speak clearly near the microphone and try again.')
+              : t.speechFail
+        setVoicePanel({ kind: 'error', msg: message })
       }
       rec.onend = () => {
         setListening(false)
         if (finalTranscript.trim()) {
           runVoiceCommand(finalTranscript)
+        } else if (!recognitionError) {
+          setVoicePanel({ kind: 'error', msg: t.speechFail })
         }
+      }
+      rec.onnomatch = () => {
+        recognitionError = true
+        setListening(false)
+        setVoicePanel({ kind: 'error', msg: t.speechFail })
       }
       try {
         rec.start()
-      } catch {
+      } catch (error) {
         setListening(false)
+        setVoicePanel({
+          kind: 'error',
+          msg: lang === 'ne'
+            ? 'माइक सुरु हुन सकेन। ब्राउजर सेटिङमा माइक अनुमति जाँच गर्नुहोस्।'
+            : 'The microphone could not start. Check browser microphone permissions and try again.'
+        })
       }
       return
     }
@@ -739,26 +828,30 @@ export default function App() {
   }
 
   // Transaction Row item
-  const TransactionItem = ({ tx, showCustomer = true }) => {
+  const TransactionItem = ({ tx, showCustomer = true, compact = false }) => {
     const isCredit = tx.type === 'credit'
     const cName = nameOf(tx.customerId)
 
     return (
-      <div className="list-row group flex items-center justify-between p-3.5 sm:p-4 rounded-2xl border border-stone-100/80 bg-white/80 hover:bg-white shadow-xs transition-all mb-2.5">
+      <div className={`list-row group flex items-center justify-between ${
+        compact
+          ? 'px-2 py-3 border-b border-stone-100 last:border-b-0'
+          : 'p-3.5 sm:p-4 rounded-2xl border border-stone-100/80 bg-white/80 shadow-xs mb-2.5'
+      } hover:bg-stone-50/80 transition-all`}>
         <div className="flex items-center gap-3 min-w-0">
           <div
-            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+            className={`${compact ? 'w-9 h-9 rounded-lg' : 'w-10 h-10 rounded-xl'} flex items-center justify-center shrink-0 ${
               isCredit ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
             }`}
           >
-            {isCredit ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
+            {isCredit ? <TrendingUp size={compact ? 17 : 20} /> : <TrendingDown size={compact ? 17 : 20} />}
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               {showCustomer && (
                 <button
                   onClick={() => setProfileCustomerId(tx.customerId)}
-                  className="font-semibold text-stone-900 hover:text-emerald-700 text-sm sm:text-base truncate transition-colors text-left"
+                  className="font-semibold text-stone-900 hover:text-emerald-700 text-sm truncate transition-colors text-left"
                 >
                   {cName}
                 </button>
@@ -771,7 +864,7 @@ export default function App() {
                 {isCredit ? t.udharo : t.payment}
               </span>
             </div>
-            <div className="text-xs text-stone-500 truncate mt-0.5">
+            <div className="text-[11px] text-stone-500 truncate mt-0.5">
               <span>{formatRelativeDate(tx.timestamp, lang)}</span>
               {tx.description && <span className="ml-1.5 font-medium text-stone-600">· {tx.description}</span>}
             </div>
@@ -780,7 +873,7 @@ export default function App() {
 
         <div className="flex items-center gap-2 sm:gap-4 shrink-0 pl-2">
           <div className="text-right">
-            <div className={`font-bold text-sm sm:text-base ${isCredit ? 'text-rose-600' : 'text-emerald-600'}`}>
+            <div className={`font-bold text-sm ${isCredit ? 'text-rose-600' : 'text-emerald-600'}`}>
               {isCredit ? '+' : '−'} {formatMoney(tx.amount, lang)}
             </div>
           </div>
@@ -825,10 +918,25 @@ export default function App() {
           <span>{toastMsg}</span>
         </div>
       )}
+      {undoAction && (
+        <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-stone-700 bg-stone-900/95 px-4 py-2.5 text-sm text-white shadow-2xl backdrop-blur-md">
+          <span>{undoAction.label}</span>
+          <button
+            className="font-bold text-emerald-300 hover:text-emerald-200"
+            onClick={() => {
+              undoAction.restore()
+              setUndoAction(null)
+              showToast(lang === 'ne' ? 'फेरि सुरक्षित गरियो' : 'Restored successfully')
+            }}
+          >
+            {lang === 'ne' ? 'फिर्ता' : 'Undo'}
+          </button>
+        </div>
+      )}
 
       {/* Top Header */}
       <header className="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-stone-200/80 transition-all">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex justify-between items-center">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center gap-3 sm:gap-5 lg:grid lg:grid-cols-[minmax(220px,1fr)_auto_minmax(280px,1fr)] lg:gap-6">
           {/* Logo & Subtitle - Clickable to navigate to Home */}
           <button
             type="button"
@@ -836,7 +944,7 @@ export default function App() {
               setTab('home')
               setProfileCustomerId(null)
             }}
-            className="btn-interactive flex items-center gap-2.5 sm:gap-3 group text-left cursor-pointer focus:outline-none"
+            className="btn-interactive shrink-0 flex items-center gap-2.5 sm:gap-3 group text-left cursor-pointer focus:outline-none lg:min-w-[220px]"
             title={lang === 'ne' ? 'गृहपृष्ठमा जानुहोस्' : 'Go to Home'}
           >
             <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-emerald-600 group-hover:bg-emerald-700 flex items-center justify-center text-white shadow-md shadow-emerald-600/20 group-hover:scale-105 transition-all">
@@ -856,7 +964,7 @@ export default function App() {
           </button>
 
           {/* Desktop Navigation Tabs */}
-          <nav className="hidden md:flex items-center gap-1 bg-stone-100/90 p-1.5 rounded-2xl border border-stone-200/70">
+          <nav className="hidden md:flex shrink-0 items-center gap-1 bg-stone-100/90 p-1.5 rounded-2xl border border-stone-200/70 lg:justify-self-center">
             {[
               ['home', Home, t.home],
               ['customers', Users, t.customers],
@@ -882,18 +990,11 @@ export default function App() {
           </nav>
 
           {/* Actions & Language Switcher */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Language Switcher Pill */}
-            <button
-              onClick={toggleLanguage}
-              className="btn-interactive h-10 px-3 sm:px-4 rounded-xl border border-stone-200 bg-white hover:bg-stone-50 flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-stone-700 shadow-2xs"
-              title="Toggle English / नेपाली"
-            >
-              <Globe size={15} className="text-emerald-600" />
-              <span>{lang === 'ne' ? 'नेपाली' : 'English'}</span>
-              <span className="text-[10px] text-stone-400 uppercase font-mono">({lang === 'ne' ? 'EN' : 'ने'})</span>
-            </button>
-
+          <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-3 lg:justify-self-end lg:min-w-[280px] lg:justify-end">
+            <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-medium text-stone-400">
+              <Check size={12} className="text-emerald-500" />
+              {saveStatus === 'saved' ? (lang === 'ne' ? 'स्थानीय रूपमा सुरक्षित' : 'Saved locally') : 'Saving...'}
+            </span>
             {/* Quick Add Transaction Button */}
             <Btn
               onClick={() => {
@@ -910,6 +1011,26 @@ export default function App() {
               <span className="hidden sm:inline">{t.addTransaction}</span>
               <span className="sm:hidden">{t.addTransaction.split(' ')[0]}</span>
             </Btn>
+
+            {/* Interface language switcher; microphone language remains independent. */}
+            <button
+              onClick={toggleLanguage}
+              className="btn-interactive flex h-10 items-center gap-1 rounded-full border border-stone-200 bg-white p-1 hover:border-emerald-300 text-xs sm:text-sm font-semibold text-stone-700 shadow-2xs"
+              title="Toggle English / नेपाली"
+              aria-label={`Switch interface language to ${lang === 'ne' ? 'English' : 'Nepali'}`}
+            >
+              <span className={`flex h-8 items-center gap-1 rounded-full px-2.5 sm:px-3 ${
+                lang === 'en' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
+              }`}>
+                <Globe size={14} />
+                <span className="w-[4.5rem] text-center">English</span>
+              </span>
+              <span className={`flex h-8 items-center rounded-full px-2.5 sm:px-3 ${
+                lang === 'ne' ? 'bg-emerald-600 text-white shadow-sm' : 'text-stone-500'
+              }`}>
+                <span className="w-[3.5rem] text-center">नेपाली</span>
+              </span>
+            </button>
           </div>
         </div>
       </header>
@@ -953,6 +1074,47 @@ export default function App() {
                       <div className="text-emerald-100 text-xs">{t.collectedToday}</div>
                       <div className="text-lg sm:text-xl font-bold mt-1 text-white">
                         {formatMoney(sumToday('payment'), lang)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Weekly Insights */}
+                <div className="card-interactive bg-white rounded-3xl p-5 sm:p-6 border border-stone-200/80 shadow-xs">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-bold text-stone-900 text-base sm:text-lg font-heading">
+                        {lang === 'ne' ? 'साप्ताहिक झलक' : 'Weekly Insights'}
+                      </h3>
+                      <p className="text-xs text-stone-500 mt-0.5">
+                        {lang === 'ne' ? 'पछिल्लो ७ दिन' : 'Last 7 days'}
+                      </p>
+                    </div>
+                    <TrendingUp size={18} className="text-emerald-600" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                    <div className="rounded-2xl bg-rose-50 p-3">
+                      <div className="text-[11px] font-medium text-rose-700">
+                        {lang === 'ne' ? 'नयाँ उधारो' : 'New credit'}
+                      </div>
+                      <div className="mt-1 text-sm sm:text-base font-bold text-rose-700">
+                        {formatMoney(weeklyInsights.credit, lang)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-emerald-50 p-3">
+                      <div className="text-[11px] font-medium text-emerald-700">
+                        {lang === 'ne' ? 'उठेको रकम' : 'Collected'}
+                      </div>
+                      <div className="mt-1 text-sm sm:text-base font-bold text-emerald-700">
+                        {formatMoney(weeklyInsights.collected, lang)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl bg-blue-50 p-3">
+                      <div className="text-[11px] font-medium text-blue-700">
+                        {lang === 'ne' ? 'संकलन दर' : 'Collection rate'}
+                      </div>
+                      <div className="mt-1 text-sm sm:text-base font-bold text-blue-700">
+                        {weeklyInsights.collectionRate}%
                       </div>
                     </div>
                   </div>
@@ -1087,7 +1249,7 @@ export default function App() {
                   ) : (
                     <div>
                       {recentTransactions.slice(0, 4).map((tx) => (
-                        <TransactionItem key={tx.id} tx={tx} showCustomer={true} />
+                        <TransactionItem key={tx.id} tx={tx} showCustomer={true} compact />
                       ))}
                     </div>
                   )}
@@ -1752,6 +1914,11 @@ export default function App() {
 
           {voicePanel.kind === 'confirm' && (
             <div className="space-y-4">
+              {lastVoiceCommand && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs italic text-blue-800">
+                  “{lastVoiceCommand}”
+                </div>
+              )}
               <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-2">
                 <div className="text-base font-bold text-stone-900">{voicePanel.customer.name}</div>
                 <div className="flex justify-between items-center text-xs text-stone-500 pt-1">
