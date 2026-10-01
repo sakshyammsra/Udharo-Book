@@ -123,6 +123,22 @@ button:disabled {
 }
 .list-row:hover {
 	background-color: rgba(220, 245, 230, 0.55);
+	transform: translateX(2px);
+}
+
+/* Lightweight motion for navigation and completed actions */
+.page-transition {
+	animation: page-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.action-pop {
+	animation: action-pop 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+button:focus-visible,
+a:focus-visible {
+	outline: 3px solid rgba(16, 185, 129, 0.35);
+	outline-offset: 3px;
 }
 
 /* Nav & Sheets */
@@ -174,6 +190,11 @@ button:disabled {
 @keyframes toast-in {
 	from { opacity: 0; transform: translate(-50%, -16px); }
 	to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes action-pop {
+	0% { opacity: 0; transform: translate(-50%, -10px) scale(0.94); }
+	65% { opacity: 1; transform: translate(-50%, 2px) scale(1.03); }
+	100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
 }
 
 /* Custom scrollbars */

@@ -5,7 +5,7 @@ const NUMBER_WORDS = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
   six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
   शून्य: 0, एक: 1, दुई: 2, तीन: 3, तिन: 3, चार: 4,
-  पाँच: 5, पाच: 5, सात: 7, आठ: 8, नौ: 9, दश: 10
+  पाँच: 5, पाच: 5, सात: 7, आठ: 8, नौ: 9, दश: 10, सय: 100, हजार: 1000
 }
 export function devanagariToAsciiDigits(str = '') {
   return str.replace(/[०-९]/g, d => DEV_DIGITS[d] || d)
@@ -28,6 +28,11 @@ export const normalize = (s = '') => {
     .trim()
 }
 
+const normalizeName = (s = '') => normalize(s)
+  // Speech recognition commonly varies long and short Nepali vowel marks.
+  .replace(/[ी]/g, 'ि')
+  .replace(/[ू]/g, 'ु')
+
 export function extractAmount(text = '') {
   const clean = devanagariToAsciiDigits(text)
 
@@ -49,8 +54,8 @@ export function extractAmount(text = '') {
   const words = normalize(clean).split(' ')
   const number = words.map(word => NUMBER_WORDS[word]).find(value => value !== undefined)
   if (number !== undefined) {
-    if (words.some(word => word === 'हजार' || word === 'thousand')) return number * 1000
-    if (words.some(word => word === 'सय' || word === 'hundred')) return number * 100
+    if (number < 100 && words.some(word => word === 'हजार' || word === 'thousand')) return number * 1000
+    if (number < 100 && words.some(word => word === 'सय' || word === 'hundred')) return number * 100
     return number
   }
 
@@ -59,13 +64,20 @@ export function extractAmount(text = '') {
 
 export function matchCustomers(spokenName, customers = []) {
   if (!spokenName || !customers.length) return []
-  const normSpoken = normalize(spokenName)
-  const spokenTokens = normSpoken.split(' ').filter(w => w && !HON.has(w))
+  const spokenTokens = normalizeName(spokenName).split(' ').filter(w => w && !HON.has(w))
   if (!spokenTokens.length) return []
 
   return customers.filter(c => {
-    const pool = normalize(`${c.name} ${c.nickname || ''} ${c.phone || ''}`).toLowerCase()
-    return spokenTokens.some(st => pool.includes(st) || (st.length >= 3 && pool.includes(st.slice(0, 3))))
+    const candidateTokens = normalizeName(`${c.name} ${c.nickname || ''} ${c.phone || ''}`)
+      .split(' ')
+      .filter(Boolean)
+
+    return spokenTokens.some((spokenToken) => candidateTokens.some((candidateToken) => {
+      if (spokenToken === candidateToken) return true
+      if (spokenToken.length < 3 || candidateToken.length < 3) return false
+      const sharedPrefixLength = Math.min(4, spokenToken.length, candidateToken.length)
+      return spokenToken.slice(0, sharedPrefixLength) === candidateToken.slice(0, sharedPrefixLength)
+    }))
   })
 }
 
@@ -124,18 +136,22 @@ export function parse(raw = '', customers = []) {
   }
 
   // 4. Determine intent
-  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|dieko|paisa diyo|payment|paid|received|transfer|cash|तिरेँ|तिर्यो|तिरे|तिरेको|तिर्नुभयो|भुक्तानी|चुक्ता|बुझायो|बुझाएँ|बुझायो|दियो|दिएँ|जम्मा|उठायो|पाए|पाएँ|प्राप्त|फिर्ता दिइन्|बुझाइदियो|ट्रान्सफर|हस्तान्तरण)/i
+  const NEGATIVE_REGEX = /(?:दिएन|दिइन|दिन्न|तिरेन|तिर्दिन|बुझाएन|बुझाइन|पाएन|आएन|didn't|did not|not paid|unpaid)/i
+  const PAY_REGEX = /(?:tiryo|tirey|tireko|tire|bujhayo|bujhaidiyo|diyeko|diyo|dieko|paisa diyo|payment|paid|received|transfer|cash|सहयोग|तिरेँ|तिर्यो|तिरे|तिरेको|तिर्नुभयो|भुक्तानी|चुक्ता|बुझायो|बुझाएँ|बुझायो|दियो|दिएँ|जम्मा|उठायो|पाए|पाएँ|प्राप्त|फिर्ता दिइन्|बुझाइदियो|ट्रान्सफर|हस्तान्तरण)/i
   const CREDIT_REGEX = /(?:udharo|udhaar|udhar|lagyo|lagyeko|liyera|liyo|lieko|saman|credit|borrow|later|पछि दिन्छु|उधारो|उधार|सापटी|लग्यो|लगेको|लियो|लिएको|लिनुभयो|सामान|दिएको|दिन्छु)/i
   const EXPENSE_REGEX = /(?:expense|purchase|खर्च|किनेँ|किनेको|किन्यो|भाडा|पेट्रोल|रिचार्ज|खाजा)/i
   const BAL_REGEX = /(?:baki|khata|kati cha|dekha|balance|status|बाँकी|बाकि|बाकी|खाता|कति छ|कति बाँकी|हिसाब|हेर्नु|हेर)/i
 
   const isPay = PAY_REGEX.test(norm)
+  const isNegative = NEGATIVE_REGEX.test(norm)
   const isBal = BAL_REGEX.test(norm) && !isPay && !CREDIT_REGEX.test(norm)
   const isCredit = CREDIT_REGEX.test(norm) || (amount && !isPay && !isBal && !EXPENSE_REGEX.test(norm))
   const isExpense = EXPENSE_REGEX.test(norm)
 
   let kind = 'unknown'
-  if (isBal) {
+  if (isNegative) {
+    kind = 'negative'
+  } else if (isBal) {
     kind = 'balance'
   } else if (isPay && amount) {
     kind = 'payment'

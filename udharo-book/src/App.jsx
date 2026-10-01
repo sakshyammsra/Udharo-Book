@@ -25,7 +25,7 @@ const toDateTimeLocal = (iso) => {
 function Modal({ title, onClose, children, maxWidth = 'max-w-lg' }) {
   return (
     <div
-      className="sheet-backdrop fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/45 p-0 sm:p-4"
+      className="sheet-backdrop fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/45 p-0 sm:p-4"
       onClick={onClose}
     >
       <div
@@ -134,6 +134,29 @@ export default function App() {
     setTimeout(() => setToastMsg(''), 2800)
   }
 
+  const copyText = async (text, successMessage) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.setAttribute('readonly', '')
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        const copied = document.execCommand('copy')
+        textarea.remove()
+        if (!copied) throw new Error('Clipboard copy command was rejected')
+      }
+      showToast(successMessage)
+    } catch (error) {
+      console.error('Failed to copy text:', error)
+      showToast(lang === 'ne' ? 'कपी गर्न सकिएन' : 'Could not copy text')
+    }
+  }
+
   const offerUndo = (label, restore) => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
     setUndoAction({ label, restore })
@@ -185,6 +208,22 @@ export default function App() {
       collectionRate: activity ? Math.round((collected / activity) * 100) : 0
     }
   }, [transactions])
+
+  const smartReminders = useMemo(() => {
+    const now = Date.now()
+    return owingCustomers
+      .map((customer) => {
+        const latest = transactions
+          .filter((tx) => tx.customerId === customer.id)
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]
+        const daysSinceActivity = latest
+          ? Math.max(0, Math.floor((now - new Date(latest.timestamp).getTime()) / 86400000))
+          : 0
+        return { customer, daysSinceActivity }
+      })
+      .sort((a, b) => b.daysSinceActivity - a.daysSinceActivity)
+      .slice(0, 3)
+  }, [owingCustomers, transactions])
 
   // Transactions sorted by timestamp descending
   const recentTransactions = useMemo(() => {
@@ -359,6 +398,14 @@ export default function App() {
     const cmd = parse(text, customers)
     const hint = lang === 'ne' ? 'उदा: "रामले ५०० रुपैयाँ उधारो लियो"' : 'Try: "Ram le 500 udharo liyo"'
 
+    if (cmd.kind === 'negative') {
+      return setVoicePanel({
+        kind: 'error',
+        msg: lang === 'ne'
+          ? 'यो वाक्यमा रकम दिइएको छैन भनिएको छ, त्यसैले कुनै कारोबार रेकर्ड गरिएन।'
+          : 'This phrase says the amount was not paid, so no transaction was recorded.'
+      })
+    }
     if (cmd.kind === 'unknown') {
       return setVoicePanel({ kind: 'error', msg: t.speechFail, hint })
     }
@@ -414,7 +461,7 @@ export default function App() {
       return setVoicePanel({ kind: 'notfound', name: cmd.name, cmd })
     }
     if (cmd.matches.length > 1) {
-      return setVoicePanel({ kind: 'pick', cmd })
+      return setVoicePanel({ kind: 'pick', cmd, confidence: 'medium' })
     }
 
     proposeVoiceAction(cmd, cmd.matches[0])
@@ -913,7 +960,7 @@ export default function App() {
     <div className="min-h-screen text-stone-900 flex flex-col justify-between">
       {/* Toast Notification */}
       {toastMsg && (
-        <div className="toast-banner fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-stone-900/95 text-white px-5 py-2.5 rounded-full shadow-2xl backdrop-blur-md text-sm font-medium flex items-center gap-2 border border-stone-700">
+        <div className="toast-banner action-pop fixed top-5 left-1/2 -translate-x-1/2 z-[90] bg-stone-900/95 text-white px-5 py-2.5 rounded-full shadow-2xl backdrop-blur-md text-sm font-medium flex items-center gap-2 border border-stone-700">
           <Check size={16} className="text-emerald-400" />
           <span>{toastMsg}</span>
         </div>
@@ -1036,7 +1083,10 @@ export default function App() {
       </header>
 
       {/* Main Content Area (Fuller & Responsive with proper bottom bar clearance) */}
-      <main className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-7 pb-28 md:pb-12 flex-1">
+      <main
+        key={`${tab}-${profileCustomerId || 'none'}`}
+        className="page-transition max-w-6xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-7 pb-28 md:pb-12 flex-1"
+      >
         {/* ================= HOME TAB ================= */}
         {tab === 'home' && (
           <div className="space-y-6">
@@ -1226,6 +1276,57 @@ export default function App() {
                             </div>
                             <span className="text-[10px] text-stone-400 uppercase font-semibold">{t.outstanding}</span>
                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Smart Reminders */}
+                <div className="card-interactive bg-white rounded-3xl p-5 sm:p-6 border border-stone-200/80 shadow-xs">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-bold text-stone-900 text-base sm:text-lg font-heading">
+                        {lang === 'ne' ? 'स्मार्ट ताकेता' : 'Smart Reminders'}
+                      </h3>
+                      <p className="text-xs text-stone-500 mt-0.5">
+                        {lang === 'ne' ? 'ताकेता गर्नुपर्ने ग्राहकहरू' : 'Customers who may need a reminder'}
+                      </p>
+                    </div>
+                    <MessageCircle size={18} className="text-emerald-600" />
+                  </div>
+
+                  {smartReminders.length === 0 ? (
+                    <p className="py-3 text-center text-sm text-stone-500">
+                      {lang === 'ne' ? 'अहिले ताकेता गर्नुपर्ने ग्राहक छैन।' : 'No reminders needed right now.'}
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {smartReminders.map(({ customer, daysSinceActivity }) => (
+                        <div key={customer.id} className="flex items-center justify-between gap-3 rounded-2xl bg-stone-50 px-3 py-2.5">
+                          <button
+                            onClick={() => setProfileCustomerId(customer.id)}
+                            className="min-w-0 text-left"
+                          >
+                            <div className="truncate text-sm font-semibold text-stone-900 hover:text-emerald-700">
+                              {customer.name}
+                            </div>
+                            <div className="text-[11px] text-stone-500">
+                              {daysSinceActivity === 0
+                                ? (lang === 'ne' ? 'आजको कारोबार' : 'Active today')
+                                : lang === 'ne'
+                                  ? `${daysSinceActivity} दिनदेखि कारोबार छैन`
+                                  : `${daysSinceActivity}d since last activity`}
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => setReminderModal(customer)}
+                            className="btn-interactive flex shrink-0 items-center gap-1 rounded-xl bg-emerald-100 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-200"
+                            title={t.sendReminder}
+                          >
+                            <Send size={13} />
+                            <span className="hidden sm:inline">{lang === 'ne' ? 'ताकेता' : 'Remind'}</span>
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -1724,6 +1825,20 @@ export default function App() {
         )}
       </main>
 
+      {/* Keep voice actions available while browsing any non-home section. */}
+      {tab !== 'home' && (
+        <button
+          onClick={listening ? stopListening : startListening}
+          className={`voice-button fixed bottom-24 right-4 md:bottom-6 md:right-6 z-[60] flex h-14 w-14 items-center justify-center rounded-full text-white shadow-xl ${
+            listening ? 'is-listening bg-rose-600' : 'bg-emerald-600'
+          }`}
+          title={listening ? (lang === 'ne' ? 'सुन्न रोक्नुहोस्' : 'Stop listening') : t.tapToSpeak}
+          aria-label={listening ? 'Stop listening' : 'Start voice command'}
+        >
+          <Mic size={24} className={listening ? 'animate-bounce' : ''} />
+        </button>
+      )}
+
       {/* ================= BOTTOM NAVIGATION (MOBILE) ================= */}
       <nav className="bottom-nav md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-stone-200/80 bg-white/95 backdrop-blur-md px-2 py-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] shadow-lg">
         <div className="grid grid-cols-4 gap-1 items-center max-w-md mx-auto">
@@ -1863,10 +1978,7 @@ export default function App() {
               <Btn
                 kind="outline"
                 className="w-full"
-                onClick={() => {
-                  navigator.clipboard.writeText(reminderText)
-                  showToast(t.messageCopied)
-                }}
+                onClick={() => copyText(reminderText, t.messageCopied)}
               >
                 <Copy size={16} />
                 <span>{t.copyReminder}</span>
@@ -1885,7 +1997,7 @@ export default function App() {
               done: t.recordedSuccess,
               answer: voicePanel.title,
               error: lang === 'ne' ? 'ध्यान दिनुहोस्' : 'Notice',
-              pick: lang === 'ne' ? `कुन ${voicePanel.cmd?.name}?` : `Which ${voicePanel.cmd?.name}?`,
+              pick: lang === 'ne' ? 'कृपया ग्राहक छान्नुहोस्' : 'Did you mean?',
               notfound: lang === 'ne' ? 'ग्राहक भेटिएन' : 'Customer Not Found'
             }[voicePanel.kind] || 'Voice'
           }
@@ -1919,13 +2031,25 @@ export default function App() {
                   “{lastVoiceCommand}”
                 </div>
               )}
-              <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-2">
-                <div className="text-base font-bold text-stone-900">{voicePanel.customer.name}</div>
+              <div className="rounded-2xl border border-stone-200 bg-white p-4 shadow-xs">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${
+                    voicePanel.type === 'credit' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
+                  }`}>
+                    {voicePanel.type === 'credit' ? <TrendingUp size={21} /> : <TrendingDown size={21} />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold uppercase tracking-wider text-stone-400">
+                      {lang === 'ne' ? 'कारोबार पुष्टि' : 'Transaction preview'}
+                    </div>
+                    <div className="truncate text-base font-bold text-stone-900">{voicePanel.customer.name}</div>
+                  </div>
+                </div>
                 <div className="flex justify-between items-center text-xs text-stone-500 pt-1">
                   <span>{t.oldBalance}:</span>
                   <b className="text-stone-800">{formatMoney(bal(voicePanel.customer.id), lang)}</b>
                 </div>
-                <div className="flex justify-between items-center text-sm">
+                <div className="flex justify-between items-center rounded-xl bg-stone-50 px-3 py-2.5 text-sm mt-2">
                   <span className="text-stone-600 font-medium">
                     {voicePanel.type === 'credit' ? `+ ${t.udharo}` : `− ${t.payment}`}:
                   </span>
@@ -1933,9 +2057,9 @@ export default function App() {
                     {formatMoney(voicePanel.amount, lang)}
                   </b>
                 </div>
-                <div className="flex justify-between items-center text-xs pt-1.5 border-t border-stone-200">
+                <div className="flex justify-between items-center text-sm pt-3 mt-2 border-t border-stone-200">
                   <span className="text-stone-700 font-semibold">{t.newBalance}:</span>
-                  <b className={voicePanel.after > 0 ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>
+                  <b className={`text-base ${voicePanel.after > 0 ? 'text-rose-600' : 'text-emerald-600'} font-bold`}>
                     {formatMoney(voicePanel.after, lang)}
                   </b>
                 </div>
@@ -1971,8 +2095,10 @@ export default function App() {
 
           {voicePanel.kind === 'pick' && (
             <div className="space-y-2">
-              <p className="text-xs text-stone-500 mb-2">
-                {lang === 'ne' ? 'कृपया उपयुक्त ग्राहक छान्नुहोस्:' : 'Select matching customer:'}
+              <p className="text-sm font-medium text-stone-700 mb-3">
+                {lang === 'ne'
+                  ? `“${voicePanel.cmd.name}” का लागि मिल्ने ग्राहकहरू भेटिए।`
+                  : `We found more than one possible match for “${voicePanel.cmd.name}”.`}
               </p>
               {voicePanel.cmd.matches.map((c) => (
                 <button
@@ -2113,8 +2239,7 @@ export default function App() {
                   kind="ghost"
                   onClick={() => {
                     const statement = `${profileCustomer.name} Khata Statement:\nOutstanding: ${formatMoney(profileBal, lang)}\nTotal Transactions: ${transactions.filter((tx) => tx.customerId === profileCustomer.id).length}`
-                    navigator.clipboard.writeText(statement)
-                    showToast(lang === 'ne' ? 'हिसाब कपी भयो' : 'Summary copied')
+                    copyText(statement, lang === 'ne' ? 'हिसाब कपी भयो' : 'Summary copied')
                   }}
                   className="text-xs sm:text-sm"
                 >
