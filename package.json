@@ -1,0 +1,10 @@
+{
+  "name": "udharo-book-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix udharo-book run dev",
+    "build": "npm --prefix udharo-book run build",
+    "preview": "npm --prefix udharo-book run preview"
+  }
+}
